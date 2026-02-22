@@ -210,7 +210,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     // Info text fields — updated in refresh(); backed by custom NSMenuItem views.
     // isEnabled=false on those items blocks hover without greying out custom views.
-    var usedField      = NSTextField(labelWithString: "")
     var histField      = NSTextField(labelWithString: "")
     var histView: NSView?   // kept so refresh() can resize it to fit actual line count
     var modeField      = NSTextField(labelWithString: "")  // "Calibrating" / "Calibrated"
@@ -284,8 +283,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let m = NSMenu()
         m.autoenablesItems = false
 
-        m.addItem(makeInfoItem(field: usedField))
-        m.addItem(.separator())
         m.addItem(makeBoldHeader("Mode"))
         m.addItem(makeInfoItem(field: modeField))
 
@@ -351,13 +348,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             }
 
             // ── Dropdown ─────────────────────────────────────────────────
-            if isCalibrated, let limit = status.estimatedLimit {
-                self.usedField.stringValue = "Used \(fmt(w.total)) of \(fmt(limit)) tokens"
-                self.modeField.stringValue = "Calibrated"
-            } else {
-                self.usedField.stringValue = "\(fmt(status.session.total)) tokens this session"
-                self.modeField.stringValue = "Calibrating"
-            }
+            self.modeField.stringValue = isCalibrated ? "Calibrated" : "Calibrating"
 
             // History section and Undo only appear once there's data
             self.histSepItem.isHidden    = !isCalibrated
