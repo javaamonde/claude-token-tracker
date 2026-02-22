@@ -287,6 +287,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         histView = histMenuItem.view
         m.addItem(histMenuItem)
         m.addItem(.separator())
+        m.addItem(makeBoldHeader("Actions"))
 
         let ran = NSMenuItem(title: "My tokens ran out",
                              action: #selector(recordLimit),
