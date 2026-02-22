@@ -207,6 +207,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     var statusItem: NSStatusItem!
     var timer: Timer?
+    var showRawMode = false   // when true, show token count even if calibrated
 
     // Info text fields — updated in refresh(); backed by custom NSMenuItem views.
     // isEnabled=false on those items blocks hover without greying out custom views.
@@ -214,6 +215,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var usedField    = NSTextField(labelWithString: "")
     var histField    = NSTextField(labelWithString: "")
     var histView: NSView?   // kept so refresh() can resize it to fit actual line count
+    var modeField    = NSTextField(labelWithString: "")  // "Calibrating" / "Calibrated"
+    var modeItem     = NSMenuItem()  // display-toggle; updated in refresh()
 
     func applicationDidFinishLaunching(_ n: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -242,9 +245,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let lpad: CGFloat = 14, rpad: CGFloat = 14, vpad: CGFloat = 2
         let lineH: CGFloat = 18
         let w: CGFloat = 260
+        let h = lineH * CGFloat(lines) + 2 * vpad
 
         field.frame = NSRect(x: lpad, y: vpad, width: w - lpad - rpad, height: lineH * CGFloat(lines))
-        let view = NSView(frame: NSRect(x: 0, y: 0, width: w, height: lineH * CGFloat(lines) + 2 * vpad))
+        let view = NSView(frame: NSRect(x: 0, y: 0, width: w, height: h))
         view.addSubview(field)
 
         let item = NSMenuItem()
@@ -281,13 +285,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         m.addItem(makeInfoItem(field: sessionField))
         m.addItem(makeInfoItem(field: usedField))
+        m.addItem(makeInfoItem(field: modeField))
         m.addItem(.separator())
-        m.addItem(makeBoldHeader("Limit history"))
+        m.addItem(makeBoldHeader("History"))
         let histMenuItem = makeInfoItem(field: histField, lines: 1)
         histView = histMenuItem.view
         m.addItem(histMenuItem)
         m.addItem(.separator())
         m.addItem(makeBoldHeader("Actions"))
+
+        modeItem.target = self
+        m.addItem(modeItem)
 
         let ran = NSMenuItem(title: "My tokens ran out",
                              action: #selector(recordLimit),
@@ -327,9 +335,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             guard let self = self else { return }
 
             let w = status.window
+            let isCalibrated = status.limitEventCount >= 1 && status.estimatedLimit != nil
 
             // ── Menu bar button ──────────────────────────────────────────
-            if let limit = status.estimatedLimit, status.limitEventCount >= 1 {
+            if isCalibrated && !self.showRawMode, let limit = status.estimatedLimit {
                 let frac = Double(w.total) / Double(limit)
                 self.statusItem.button?.image = makeBarImage(fraction: frac)
                 self.statusItem.button?.title = ""
@@ -340,13 +349,21 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             }
 
             // ── Dropdown ─────────────────────────────────────────────────
-            if let limit = status.estimatedLimit, status.limitEventCount >= 1 {
+            if isCalibrated, let limit = status.estimatedLimit {
                 let pct = Int(Double(status.session.total) / Double(limit) * 100)
                 self.sessionField.stringValue = "This session: \(pct)%"
                 self.usedField.stringValue    = "Used \(fmt(w.total)) of \(fmt(limit)) tokens"
+                self.modeField.stringValue    = "Mode: Calibrated"
+                self.modeItem.title     = self.showRawMode ? "Show progress bar" : "Show token count"
+                self.modeItem.action    = #selector(self.toggleMode)
+                self.modeItem.isEnabled = true
             } else {
                 self.sessionField.stringValue = "This session: \(fmt(status.session.total)) tokens"
                 self.usedField.stringValue    = "Tap 'My tokens ran out' to calibrate"
+                self.modeField.stringValue    = "Mode: Calibrating"
+                self.modeItem.title     = "Show token count"
+                self.modeItem.action    = nil
+                self.modeItem.isEnabled = false
             }
 
             let evList = limits.events.suffix(4)
@@ -429,6 +446,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
 
+        refresh()
+    }
+
+    @objc func toggleMode() {
+        showRawMode.toggle()
         refresh()
     }
 }
