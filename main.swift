@@ -210,12 +210,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     // Info text fields — updated in refresh(); backed by custom NSMenuItem views.
     // isEnabled=false on those items blocks hover without greying out custom views.
-    var sessionField = NSTextField(labelWithString: "")
-    var usedField    = NSTextField(labelWithString: "")
-    var histField    = NSTextField(labelWithString: "")
+    var usedField      = NSTextField(labelWithString: "")
+    var histField      = NSTextField(labelWithString: "")
     var histView: NSView?   // kept so refresh() can resize it to fit actual line count
-    var modeField    = NSTextField(labelWithString: "")  // "Calibrating" / "Calibrated"
-    var undoItem     = NSMenuItem()  // hidden until first limit event
+    var modeField      = NSTextField(labelWithString: "")  // "Calibrating" / "Calibrated"
+    var undoItem       = NSMenuItem()  // hidden until first limit event
+    var histSepItem    = NSMenuItem()  // separator before History — hidden when calibrating
+    var histHeaderItem = NSMenuItem()  // "History" bold header — hidden when calibrating
+    var histBodyItem   = NSMenuItem()  // hist rows — hidden when calibrating
 
     func applicationDidFinishLaunching(_ n: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -282,14 +284,19 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let m = NSMenu()
         m.autoenablesItems = false
 
-        m.addItem(makeInfoItem(field: sessionField))
         m.addItem(makeInfoItem(field: usedField))
-        m.addItem(makeInfoItem(field: modeField))
         m.addItem(.separator())
-        m.addItem(makeBoldHeader("History"))
+        m.addItem(makeBoldHeader("Mode"))
+        m.addItem(makeInfoItem(field: modeField))
+
+        histSepItem = .separator()
+        m.addItem(histSepItem)
+        histHeaderItem = makeBoldHeader("History")
+        m.addItem(histHeaderItem)
         let histMenuItem = makeInfoItem(field: histField, lines: 1)
         histView = histMenuItem.view
-        m.addItem(histMenuItem)
+        histBodyItem = histMenuItem
+        m.addItem(histBodyItem)
         m.addItem(.separator())
         m.addItem(makeBoldHeader("Actions"))
 
@@ -345,18 +352,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
             // ── Dropdown ─────────────────────────────────────────────────
             if isCalibrated, let limit = status.estimatedLimit {
-                let pct = Int(Double(status.session.total) / Double(limit) * 100)
-                self.sessionField.stringValue = "This session: \(pct)%"
-                self.usedField.stringValue    = "Used \(fmt(w.total)) of \(fmt(limit)) tokens"
-                self.modeField.stringValue    = "Mode: Calibrated"
+                self.usedField.stringValue = "Used \(fmt(w.total)) of \(fmt(limit)) tokens"
+                self.modeField.stringValue = "Calibrated"
             } else {
-                self.sessionField.stringValue = "This session: \(fmt(status.session.total)) tokens"
-                self.usedField.stringValue    = "Tap 'My tokens ran out' to calibrate"
-                self.modeField.stringValue    = "Mode: Calibrating"
+                self.usedField.stringValue = "\(fmt(status.session.total)) tokens this session"
+                self.modeField.stringValue = "Calibrating"
             }
 
-            // Undo only makes sense once there's something to undo
-            self.undoItem.isHidden = !isCalibrated
+            // History section and Undo only appear once there's data
+            self.histSepItem.isHidden    = !isCalibrated
+            self.histHeaderItem.isHidden = !isCalibrated
+            self.histBodyItem.isHidden   = !isCalibrated
+            self.undoItem.isHidden       = !isCalibrated
 
             let evList = limits.events.suffix(4)
             if evList.isEmpty {
