@@ -162,6 +162,7 @@ func makeBarImage(fraction: Double) -> NSImage {
     outerPath.stroke()
 
     // Inner fill — square left corners (flush), rounded right corners only.
+    // Stroke is centred on its path so the inner edge is at pad + strokeW/2.
     let f      = max(0, min(1, fraction))
     let innerX = pad + strokeW / 2
     let innerY = pad + strokeW / 2
@@ -192,7 +193,7 @@ func makeBarImage(fraction: Double) -> NSImage {
 
     let img = NSImage(size: NSSize(width: ptW, height: ptH))
     img.addRepresentation(rep)
-    img.isTemplate = true
+    img.isTemplate = true   // lets macOS handle dark/light adaptation automatically
     return img
 }
 
@@ -207,10 +208,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var statusItem: NSStatusItem!
     var timer: Timer?
 
+    // Info text fields — updated in refresh(); backed by custom NSMenuItem views.
+    // isEnabled=false on those items blocks hover without greying out custom views.
     var sessionField = NSTextField(labelWithString: "")
     var usedField    = NSTextField(labelWithString: "")
     var histField    = NSTextField(labelWithString: "")
-    var histView: NSView?
+    var histView: NSView?   // kept so refresh() can resize it to fit actual line count
 
     func applicationDidFinishLaunching(_ n: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -222,6 +225,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    // MARK: Menu
+
+    // Returns a non-interactive info item. The custom view means the system never
+    // greys it out (disabled only suppresses hover on the menu row, not view content).
     func makeInfoItem(field: NSTextField, lines: Int = 1) -> NSMenuItem {
         field.font               = NSFont.menuFont(ofSize: 0)
         field.textColor          = .labelColor
@@ -235,14 +242,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let lpad: CGFloat = 14, rpad: CGFloat = 14, vpad: CGFloat = 2
         let lineH: CGFloat = 18
         let w: CGFloat = 260
-        let h = lineH * CGFloat(lines) + 2 * vpad
 
         field.frame = NSRect(x: lpad, y: vpad, width: w - lpad - rpad, height: lineH * CGFloat(lines))
-        let view = NSView(frame: NSRect(x: 0, y: 0, width: w, height: h))
+        let view = NSView(frame: NSRect(x: 0, y: 0, width: w, height: lineH * CGFloat(lines) + 2 * vpad))
         view.addSubview(field)
 
         let item = NSMenuItem()
-        item.isEnabled = false
+        item.isEnabled = false   // no hover; custom view ignores this for colour
         item.view = view
         return item
     }
@@ -287,12 +293,20 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                              keyEquivalent: "")
         ran.target = self
         m.addItem(ran)
+
+        let rem = NSMenuItem(title: "Undo last event",
+                             action: #selector(removeLastLimit),
+                             keyEquivalent: "")
+        rem.target = self
+        m.addItem(rem)
         m.addItem(.separator())
         m.addItem(NSMenuItem(title: "Quit",
                              action: #selector(NSApplication.terminate(_:)),
                              keyEquivalent: "q"))
         statusItem.menu = m
     }
+
+    // MARK: Refresh
 
     func refresh() {
         guard
@@ -313,6 +327,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
             let w = status.window
 
+            // ── Menu bar button ──────────────────────────────────────────
             if let limit = status.estimatedLimit, status.limitEventCount >= 1 {
                 let frac = Double(w.total) / Double(limit)
                 self.statusItem.button?.image = makeBarImage(fraction: frac)
@@ -323,6 +338,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 self.statusItem.button?.title = " \(fmt(status.session.total))"
             }
 
+            // ── Dropdown ─────────────────────────────────────────────────
             if let limit = status.estimatedLimit, status.limitEventCount >= 1 {
                 let pct = Int(Double(status.session.total) / Double(limit) * 100)
                 self.sessionField.stringValue = "This session: \(pct)%"
@@ -344,6 +360,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 }.joined(separator: "\n")
             }
 
+            // Resize histView to fit exact line count — no wasted whitespace
             let lineCount  = max(1, evList.isEmpty ? 1 : evList.count)
             let lineH: CGFloat = 18, vpad: CGFloat = 2
             let newH = lineH * CGFloat(lineCount) + 2 * vpad
@@ -351,6 +368,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             self.histView?.frame.size.height = newH
         }
     }
+
+    // MARK: Record limit
 
     @objc func recordLimit() {
         guard
@@ -378,12 +397,45 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         refresh()
     }
+
+    @objc func removeLastLimit() {
+        var limits = (try? JSONDecoder().decode(
+            LimitsData.self,
+            from: (try? Data(contentsOf: limitsFile)) ?? Data()
+        )) ?? LimitsData(events: [])
+
+        guard !limits.events.isEmpty else { return }
+        limits.events.removeLast()
+        try? JSONEncoder().encode(limits).write(to: limitsFile)
+
+        // Patch token_status.json in-place — recalculate only the event-derived
+        // fields (estimated_limit, limit_event_count, window_start) so session
+        // and window totals are preserved and the display doesn't flash to zero.
+        if let data = try? Data(contentsOf: statusFile),
+           var obj  = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+
+            let vals = limits.events.map { $0.tokensAtLimit }.sorted()
+            let mid  = vals.count / 2
+            let est: Any = vals.isEmpty ? NSNull() :
+                           (vals.count % 2 != 0 ? vals[mid] : (vals[mid-1] + vals[mid]) / 2)
+
+            obj["limit_event_count"] = limits.events.count
+            obj["estimated_limit"]   = est
+            obj["window_start"]      = limits.events.last?.timestamp ?? NSNull()
+
+            if let updated = try? JSONSerialization.data(withJSONObject: obj) {
+                try? updated.write(to: statusFile)
+            }
+        }
+
+        refresh()
+    }
 }
 
 // MARK: - Entry point
 
 let app      = NSApplication.shared
-app.setActivationPolicy(.accessory)
+app.setActivationPolicy(.accessory)   // no Dock icon
 let delegate = AppDelegate()
 app.delegate = delegate
 app.run()
