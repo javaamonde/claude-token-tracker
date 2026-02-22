@@ -207,7 +207,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     var statusItem: NSStatusItem!
     var timer: Timer?
-    var showRawMode = false   // when true, show token count even if calibrated
 
     // Info text fields — updated in refresh(); backed by custom NSMenuItem views.
     // isEnabled=false on those items blocks hover without greying out custom views.
@@ -216,7 +215,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var histField    = NSTextField(labelWithString: "")
     var histView: NSView?   // kept so refresh() can resize it to fit actual line count
     var modeField    = NSTextField(labelWithString: "")  // "Calibrating" / "Calibrated"
-    var modeItem     = NSMenuItem()  // display-toggle; updated in refresh()
+    var undoItem     = NSMenuItem()  // hidden until first limit event
 
     func applicationDidFinishLaunching(_ n: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -294,20 +293,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         m.addItem(.separator())
         m.addItem(makeBoldHeader("Actions"))
 
-        modeItem.target = self
-        m.addItem(modeItem)
-
         let ran = NSMenuItem(title: "My tokens ran out",
                              action: #selector(recordLimit),
                              keyEquivalent: "")
         ran.target = self
         m.addItem(ran)
 
-        let rem = NSMenuItem(title: "Undo last event",
-                             action: #selector(removeLastLimit),
-                             keyEquivalent: "")
-        rem.target = self
-        m.addItem(rem)
+        undoItem.title = "Undo"
+        undoItem.action = #selector(removeLastLimit)
+        undoItem.target = self
+        m.addItem(undoItem)
         m.addItem(.separator())
         m.addItem(NSMenuItem(title: "Quit",
                              action: #selector(NSApplication.terminate(_:)),
@@ -338,7 +333,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             let isCalibrated = status.limitEventCount >= 1 && status.estimatedLimit != nil
 
             // ── Menu bar button ──────────────────────────────────────────
-            if isCalibrated && !self.showRawMode, let limit = status.estimatedLimit {
+            if isCalibrated, let limit = status.estimatedLimit {
                 let frac = Double(w.total) / Double(limit)
                 self.statusItem.button?.image = makeBarImage(fraction: frac)
                 self.statusItem.button?.title = ""
@@ -354,17 +349,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 self.sessionField.stringValue = "This session: \(pct)%"
                 self.usedField.stringValue    = "Used \(fmt(w.total)) of \(fmt(limit)) tokens"
                 self.modeField.stringValue    = "Mode: Calibrated"
-                self.modeItem.title     = self.showRawMode ? "Show progress bar" : "Show token count"
-                self.modeItem.action    = #selector(self.toggleMode)
-                self.modeItem.isEnabled = true
             } else {
                 self.sessionField.stringValue = "This session: \(fmt(status.session.total)) tokens"
                 self.usedField.stringValue    = "Tap 'My tokens ran out' to calibrate"
                 self.modeField.stringValue    = "Mode: Calibrating"
-                self.modeItem.title     = "Show token count"
-                self.modeItem.action    = nil
-                self.modeItem.isEnabled = false
             }
+
+            // Undo only makes sense once there's something to undo
+            self.undoItem.isHidden = !isCalibrated
 
             let evList = limits.events.suffix(4)
             if evList.isEmpty {
@@ -446,11 +438,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
 
-        refresh()
-    }
-
-    @objc func toggleMode() {
-        showRawMode.toggle()
         refresh()
     }
 }
