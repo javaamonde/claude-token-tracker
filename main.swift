@@ -223,7 +223,7 @@ func makeBarImage(fraction: Double) -> NSImage {
     return img
 }
 
-// MARK: - Text-inside-bar image (countdown / Ready)
+// MARK: - Text-inside-bar image (Ready state only)
 
 func makeTextBarImage(text: String, bold: Bool = false) -> NSImage {
     let ptW: CGFloat = 52, ptH: CGFloat = 15
@@ -306,7 +306,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var refillingFraction: Double?
     var refillingTimer:    Timer?
     var showingReady = false
-    var readyTimer:  Timer?
 
     // MARK: Launch
 
@@ -422,8 +421,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: Reset / Refill animation
 
     func handleReset() {
-        rateLimitResetAt    = nil
-        lastSeenRateLimitTs = nil
+        rateLimitResetAt = nil
+        // Keep lastSeenRateLimitTs — prevents re-processing the same JSONL entry
+        // after the window resets to 0 (dedup guard would otherwise miss it)
         startRefillAnimation()
     }
 
@@ -444,14 +444,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 self.refillingFraction = nil
                 t.invalidate()
                 self.refillingTimer = nil
-                // Flash "Ready" for 2 seconds
+                // Show "Ready" — persists until first tokens are consumed (cleared in refresh)
                 self.showingReady = true
                 self.updateMenuBarButton(windowTotal: 0, limit: 1, sessionTotal: 0, isCalibrated: true)
-                self.readyTimer?.invalidate()
-                self.readyTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: false) { [weak self] _ in
-                    self?.showingReady = false
-                    self?.refresh()
-                }
             } else {
                 self.refillingFraction = 1 - pow(1 - progress, 3)   // ease-out cubic
                 self.updateMenuBarButton(windowTotal: 0, limit: 1, sessionTotal: 0, isCalibrated: true)
@@ -462,7 +457,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: Menu bar button
 
     func updateMenuBarButton(windowTotal: Int, limit: Int?, sessionTotal: Int, isCalibrated: Bool) {
-        // 0. "Ready" flash after refill completes
+        // 0. "Ready" — shown after refill, until first tokens consumed
         if showingReady {
             statusItem.button?.image = makeTextBarImage(text: "Ready", bold: true)
             statusItem.button?.title = ""
@@ -476,7 +471,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
-        // 2. Rate limited: countdown text inside bar outline
+        // 2. Rate limited: countdown as icon + text (same style/size as calibrating)
         if let resetAt = rateLimitResetAt {
             let rem = max(0, resetAt.timeIntervalSinceNow)
             let h = Int(rem) / 3600
@@ -487,8 +482,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             else if m >= 2 { display = "\(m)m" }
             else if m == 1 { display = "1m \(s)s" }
             else           { display = "\(s)s" }
-            statusItem.button?.image = makeTextBarImage(text: display)
-            statusItem.button?.title = ""
+            statusItem.button?.image         = makeTokenIcon()
+            statusItem.button?.imagePosition = .imageLeft
+            statusItem.button?.title         = "\u{2009}\(display)"
             return
         }
 
@@ -622,6 +618,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
             let isCalibrated = status.limitEventCount >= 1 && status.estimatedLimit != nil
 
+            // Clear "Ready" once new tokens start being consumed
+            if self.showingReady && status.window.total > 0 {
+                self.showingReady = false
+            }
+
             // ── Menu bar ─────────────────────────────────────────────────
             self.updateMenuBarButton(
                 windowTotal:  status.window.total,
@@ -631,10 +632,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             )
 
             // ── Show / hide dropdown sections ─────────────────────────────
+            // Hide session row during countdown & refill (between sessions)
+            let showSession = isCalibrated
+                           && self.rateLimitResetAt == nil
+                           && self.refillingFraction == nil
             self.hintItem.isHidden          = isCalibrated
-            self.sessionHeaderItem.isHidden = !isCalibrated
-            self.usageAbsItem.isHidden      = !isCalibrated
-            self.mainSepItem.isHidden       = !isCalibrated
+            self.sessionHeaderItem.isHidden = !showSession
+            self.usageAbsItem.isHidden      = !showSession
+            self.mainSepItem.isHidden       = !showSession
             self.optionsItem.isHidden       = !isCalibrated
 
             // ── Update values ─────────────────────────────────────────────
