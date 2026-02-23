@@ -236,17 +236,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var timer: Timer?
 
     // Dropdown info fields
-    var histField        = NSTextField(labelWithString: "")
+    var histField            = NSTextField(labelWithString: "")
     var histView: NSView?
-    var hintField        = NSTextField(labelWithString: "")   // shown only when calibrating
-    var hintItem         = NSMenuItem()
-    var usageField       = NSTextField(labelWithString: "")   // shown when calibrated
-    var usageItem        = NSMenuItem()
-    var undoItem         = NSMenuItem()
-    var histSepItem      = NSMenuItem()
-    var histHeaderItem   = NSMenuItem()
-    var histBodyItem     = NSMenuItem()
-    var histTrailSepItem = NSMenuItem()
+    var hintField            = NSTextField(labelWithString: "")   // shown only when calibrating
+    var hintItem             = NSMenuItem()
+    var usageField           = NSTextField(labelWithString: "")   // shown when calibrated
+    var usageItem            = NSMenuItem()
+    var currentSessionHeader = NSMenuItem()
+    var undoItem             = NSMenuItem()
+    var histSepItem          = NSMenuItem()
+    var histHeaderItem       = NSMenuItem()
+    var histBodyItem         = NSMenuItem()
+    var histTrailSepItem     = NSMenuItem()
 
     // FSEvents
     var fsEventStream:       FSEventStreamRef?
@@ -491,7 +492,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let m = NSMenu()
         m.autoenablesItems = false
 
-        // Usage row — shown only when calibrated
+        // Current session header + usage row — shown only when calibrated
+        currentSessionHeader = makeBoldHeader("Current session")
+        m.addItem(currentSessionHeader)
         usageItem = makeInfoItem(field: usageField)
         usageField.textColor = .secondaryLabelColor
         m.addItem(usageItem)
@@ -564,13 +567,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             )
 
             // ── Usage / History block — shown when calibrated ────────────
-            self.usageItem.isHidden        = !isCalibrated
-            self.histSepItem.isHidden      = !isCalibrated
-            self.histHeaderItem.isHidden   = !isCalibrated
-            self.histBodyItem.isHidden     = !isCalibrated
-            self.histTrailSepItem.isHidden = !isCalibrated
-            self.hintItem.isHidden         = isCalibrated
-            self.undoItem.isHidden         = !isCalibrated
+            self.currentSessionHeader.isHidden = !isCalibrated
+            self.usageItem.isHidden            = !isCalibrated
+            self.histSepItem.isHidden          = !isCalibrated
+            self.histHeaderItem.isHidden       = !isCalibrated
+            self.histBodyItem.isHidden         = !isCalibrated
+            self.histTrailSepItem.isHidden     = !isCalibrated
+            self.hintItem.isHidden             = isCalibrated
+            self.undoItem.isHidden             = !isCalibrated
 
             if isCalibrated, let limit = status.estimatedLimit, limit > 0 {
                 self.usageField.stringValue = "\(fmt(status.window.total)) / \(fmt(limit))"
