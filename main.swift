@@ -236,13 +236,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var timer: Timer?
 
     // Dropdown info fields
-    var histField      = NSTextField(labelWithString: "")
+    var histField        = NSTextField(labelWithString: "")
     var histView: NSView?
-    var modeField      = NSTextField(labelWithString: "")
-    var undoItem       = NSMenuItem()
-    var histSepItem    = NSMenuItem()
-    var histHeaderItem = NSMenuItem()
-    var histBodyItem   = NSMenuItem()
+    var hintField        = NSTextField(labelWithString: "")   // shown only when calibrating
+    var hintItem         = NSMenuItem()
+    var usageField       = NSTextField(labelWithString: "")   // shown when calibrated
+    var usageItem        = NSMenuItem()
+    var undoItem         = NSMenuItem()
+    var histSepItem      = NSMenuItem()
+    var histHeaderItem   = NSMenuItem()
+    var histBodyItem     = NSMenuItem()
+    var histTrailSepItem = NSMenuItem()
 
     // FSEvents
     var fsEventStream:       FSEventStreamRef?
@@ -359,7 +363,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                   let obj      = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any],
                   let tsStr    = obj["timestamp"] as? String,
                   let ts       = parseDate(tsStr),
-                  ts > rateLimitTs.addingTimeInterval(5) else { continue }
+                  ts > rateLimitTs.addingTimeInterval(5) else { continue }  // must be after limit
 
             DispatchQueue.main.async { [weak self] in self?.handleReset() }
             return
@@ -369,7 +373,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: Reset / Refill animation
 
     func handleReset() {
-        rateLimitResetAt    = nil
+        rateLimitResetAt  = nil
         lastSeenRateLimitTs = nil   // allow next rate limit to be detected fresh
         startRefillAnimation()
     }
@@ -401,10 +405,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: Menu bar button
 
     func updateMenuBarButton(windowTotal: Int, limit: Int?, sessionTotal: Int, isCalibrated: Bool) {
-        // 1. Refill animation takes priority
+        // 1. Refill animation
         if let frac = refillingFraction {
-            statusItem.button?.image = makeBarImage(fraction: frac)
-            statusItem.button?.title = ""
+            statusItem.button?.image    = makeBarImage(fraction: frac)
+            statusItem.button?.title    = ""
             return
         }
 
@@ -487,8 +491,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let m = NSMenu()
         m.autoenablesItems = false
 
-        m.addItem(makeBoldHeader("Mode"))
-        m.addItem(makeInfoItem(field: modeField))
+        // Usage row — shown only when calibrated
+        usageItem = makeInfoItem(field: usageField)
+        usageField.textColor = .secondaryLabelColor
+        m.addItem(usageItem)
 
         histSepItem = .separator()
         m.addItem(histSepItem)
@@ -498,8 +504,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         histView = histMenuItem.view
         histBodyItem = histMenuItem
         m.addItem(histBodyItem)
-        m.addItem(.separator())
+
+        histTrailSepItem = .separator()
+        m.addItem(histTrailSepItem)
+
         m.addItem(makeBoldHeader("Actions"))
+
+        // Hint — shown only when calibrating
+        hintItem = makeInfoItem(field: hintField, lines: 3)
+        hintField.textColor = .secondaryLabelColor
+        hintField.stringValue = "Tracker calibrates after you register your tokens running out for the first time"
+        m.addItem(hintItem)
 
         let ran = NSMenuItem(title: "My tokens ran out",
                              action: #selector(recordLimit), keyEquivalent: "")
@@ -548,20 +563,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 isCalibrated: isCalibrated
             )
 
-            // ── Mode label ───────────────────────────────────────────────
-            if self.rateLimitResetAt != nil {
-                self.modeField.stringValue = "Rate limited"
-            } else if isCalibrated {
-                self.modeField.stringValue = "Calibrated"
-            } else {
-                self.modeField.stringValue = "Calibrating"
-            }
+            // ── Usage / History block — shown when calibrated ────────────
+            self.usageItem.isHidden        = !isCalibrated
+            self.histSepItem.isHidden      = !isCalibrated
+            self.histHeaderItem.isHidden   = !isCalibrated
+            self.histBodyItem.isHidden     = !isCalibrated
+            self.histTrailSepItem.isHidden = !isCalibrated
+            self.hintItem.isHidden         = isCalibrated
+            self.undoItem.isHidden         = !isCalibrated
 
-            // ── History + Undo — hidden until calibrated ─────────────────
-            self.histSepItem.isHidden    = !isCalibrated
-            self.histHeaderItem.isHidden = !isCalibrated
-            self.histBodyItem.isHidden   = !isCalibrated
-            self.undoItem.isHidden       = !isCalibrated
+            if isCalibrated, let limit = status.estimatedLimit, limit > 0 {
+                self.usageField.stringValue = "\(fmt(status.window.total)) / \(fmt(limit))"
+            }
 
             let evList = limits.events.suffix(4)
             if evList.isEmpty {
@@ -597,9 +610,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             LimitsData.self, from: (try? Data(contentsOf: limitsFile)) ?? Data()
         )) ?? LimitsData(events: [])
 
-        let iso   = ISO8601DateFormatter()
-        var event = LimitEvent(timestamp: iso.string(from: Date()),
-                               tokensAtLimit: status.window.total)
+        let iso      = ISO8601DateFormatter()
+        var event    = LimitEvent(timestamp: iso.string(from: Date()),
+                                  tokensAtLimit: status.window.total)
         event.resetTimestamp = iso.string(from: resetTime)
         limits.events.append(event)
         try? JSONEncoder().encode(limits).write(to: limitsFile)
