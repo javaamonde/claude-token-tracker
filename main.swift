@@ -34,7 +34,7 @@ struct Counts: Codable {
 struct LimitEvent: Codable {
     let timestamp: String
     let tokensAtLimit: Int
-    var resetTimestamp: String?       // ISO8601 of when tokens reset
+    var resetTimestamp: String?
     enum CodingKeys: String, CodingKey {
         case timestamp
         case tokensAtLimit  = "tokens_at_limit"
@@ -113,7 +113,6 @@ func parseResetTime(from text: String) -> Date? {
     c.hour = hour; c.minute = minute; c.second = 0
 
     guard let candidate = cal.date(from: c) else { return nil }
-    // If the time has already passed today, it must be tomorrow
     return candidate > now ? candidate : cal.date(byAdding: .day, value: 1, to: candidate)
 }
 
@@ -128,7 +127,7 @@ func makeTokenIcon(ptSize: CGFloat = 14) -> NSImage {
         Once.done = true
     }
 
-    let tokenChar = "\u{EA25}"   // "token" glyph, FILL=1
+    let tokenChar = "\u{EA25}"
     let scale: CGFloat = 2
     let px = Int(ptSize * scale)
 
@@ -163,7 +162,7 @@ func makeTokenIcon(ptSize: CGFloat = 14) -> NSImage {
     return img
 }
 
-// MARK: - Bar image
+// MARK: - Bar image (draining fill)
 
 func makeBarImage(fraction: Double) -> NSImage {
     let ptW: CGFloat = 52, ptH: CGFloat = 15
@@ -224,6 +223,52 @@ func makeBarImage(fraction: Double) -> NSImage {
     return img
 }
 
+// MARK: - Text-inside-bar image (countdown / Ready)
+
+func makeTextBarImage(text: String, bold: Bool = false) -> NSImage {
+    let ptW: CGFloat = 52, ptH: CGFloat = 15
+    let scale: CGFloat = 2
+    let pxW = Int(ptW * scale), pxH = Int(ptH * scale)
+
+    guard let rep = NSBitmapImageRep(
+        bitmapDataPlanes: nil, pixelsWide: pxW, pixelsHigh: pxH,
+        bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,
+        isPlanar: false, colorSpaceName: .calibratedRGB, bytesPerRow: 0, bitsPerPixel: 0
+    ) else { return NSImage() }
+
+    NSGraphicsContext.saveGraphicsState()
+    NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+
+    let pad: CGFloat = 2, strokeW: CGFloat = 2
+    let W = CGFloat(pxW), H = CGFloat(pxH)
+    let r: CGFloat = (H - 2 * pad) / 4
+
+    // Border only (no fill)
+    let outerPath = NSBezierPath(
+        roundedRect: CGRect(x: pad, y: pad, width: W - 2*pad, height: H - 2*pad),
+        xRadius: r, yRadius: r)
+    outerPath.lineWidth = strokeW
+    NSColor.black.setStroke()
+    outerPath.stroke()
+
+    // Text centered inside
+    let fontSize = 8.0 * scale
+    let font = bold ? NSFont.boldSystemFont(ofSize: fontSize)
+                    : NSFont.systemFont(ofSize: fontSize, weight: .medium)
+    let attr = NSAttributedString(string: text, attributes: [
+        .font: font, .foregroundColor: NSColor.black
+    ])
+    let sz = attr.size()
+    attr.draw(at: CGPoint(x: (W - sz.width) / 2, y: (H - sz.height) / 2))
+
+    NSGraphicsContext.restoreGraphicsState()
+
+    let img = NSImage(size: NSSize(width: ptW, height: ptH))
+    img.addRepresentation(rep)
+    img.isTemplate = true
+    return img
+}
+
 // MARK: - App Delegate
 
 class AppDelegate: NSObject, NSApplicationDelegate {
@@ -235,24 +280,33 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var statusItem: NSStatusItem!
     var timer: Timer?
 
-    // Dropdown info fields
-    var histField            = NSTextField(labelWithString: "")
-    var histView: NSView?
-    var usageField           = NSTextField(labelWithString: "")   // shown when calibrated
-    var usageItem            = NSMenuItem()
-    var currentSessionHeader = NSMenuItem()
-    var histSepItem          = NSMenuItem()
-    var histHeaderItem       = NSMenuItem()
-    var histBodyItem         = NSMenuItem()
+    // Calibrating state
+    var hintField = NSTextField(labelWithString: "")
+    var hintItem  = NSMenuItem()
+
+    // Calibrated state — current session row (left header + right %)
+    var sessionPctField   = NSTextField(labelWithString: "")
+    var sessionHeaderItem = NSMenuItem()
+
+    // Calibrated state — absolute usage row
+    var usageAbsField = NSTextField(labelWithString: "")
+    var usageAbsItem  = NSMenuItem()
+
+    // Separators and Options submenu
+    var mainSepItem    = NSMenuItem()
+    var optionsItem    = NSMenuItem()
+    var historySubmenu = NSMenu(title: "Options")
 
     // FSEvents
     var fsEventStream:       FSEventStreamRef?
     var lastSeenRateLimitTs: Date?
 
     // Rate-limit / reset state
-    var rateLimitResetAt:  Date?     // non-nil = showing countdown
-    var refillingFraction: Double?   // non-nil = refill animation in progress
+    var rateLimitResetAt:  Date?
+    var refillingFraction: Double?
     var refillingTimer:    Timer?
+    var showingReady = false
+    var readyTimer:  Timer?
 
     // MARK: Launch
 
@@ -268,7 +322,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// On restart, if the last event's reset time is still in the future, resume countdown.
+    /// On restart, resume countdown if a rate-limit reset is still pending.
     func restoreRateLimitState() {
         guard let data      = try? Data(contentsOf: limitsFile),
               let limits    = try? JSONDecoder().decode(LimitsData.self, from: data),
@@ -279,13 +333,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         rateLimitResetAt = resetDate
     }
 
-    // MARK: FSEvents — detect rate limit and reset
+    // MARK: FSEvents — watch JSONL transcripts
 
     func startWatchingTranscripts() {
-        let dir    = home.appendingPathComponent(".claude/projects").path
+        let dir     = home.appendingPathComponent(".claude/projects").path
         let selfPtr = UnsafeMutableRawPointer(Unmanaged.passUnretained(self).toOpaque())
-        var ctx    = FSEventStreamContext(version: 0, info: selfPtr,
-                                          retain: nil, release: nil, copyDescription: nil)
+        var ctx     = FSEventStreamContext(version: 0, info: selfPtr,
+                                           retain: nil, release: nil, copyDescription: nil)
 
         let cb: FSEventStreamCallback = { _, info, count, rawPaths, _, _ in
             guard let info = info else { return }
@@ -326,14 +380,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             if let last = lastSeenRateLimitTs, ts <= last { return }
             lastSeenRateLimitTs = ts
 
-            // Try to parse exact reset time from the message content
             var resetTime: Date? = nil
             if let msg     = obj["message"] as? [String: Any],
                let content = msg["content"] as? [[String: Any]],
                let msgText = content.first?["text"] as? String {
                 resetTime = parseResetTime(from: msgText)
             }
-            // Fall back to 5-hour estimate
             let resolvedReset = resetTime ?? Date().addingTimeInterval(5 * 3600)
 
             DispatchQueue.main.async { [weak self] in
@@ -343,7 +395,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// After a rate limit, watch for the first successful assistant response — that means reset.
+    /// After a rate limit, watch for the first successful assistant response = tokens reset.
     func checkForReset(in path: String) {
         guard let rateLimitTs = lastSeenRateLimitTs else { return }
         guard let fh = FileHandle(forReadingAtPath: path) else { return }
@@ -360,7 +412,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                   let obj      = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any],
                   let tsStr    = obj["timestamp"] as? String,
                   let ts       = parseDate(tsStr),
-                  ts > rateLimitTs.addingTimeInterval(5) else { continue }  // must be after limit
+                  ts > rateLimitTs.addingTimeInterval(5) else { continue }
 
             DispatchQueue.main.async { [weak self] in self?.handleReset() }
             return
@@ -370,16 +422,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: Reset / Refill animation
 
     func handleReset() {
-        rateLimitResetAt  = nil
-        lastSeenRateLimitTs = nil   // allow next rate limit to be detected fresh
+        rateLimitResetAt    = nil
+        lastSeenRateLimitTs = nil
         startRefillAnimation()
     }
 
     func startRefillAnimation() {
+        showingReady      = false
         refillingFraction = 0.0
         refillingTimer?.invalidate()
         let duration: Double = 1.5
-        let interval: Double = 1.0 / 20   // 20 fps
+        let interval: Double = 1.0 / 20
         let steps = duration / interval
         var step  = 0.0
 
@@ -388,28 +441,42 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             step += 1
             let progress = step / steps
             if progress >= 1 {
-                self.refillingFraction = nil   // done
+                self.refillingFraction = nil
                 t.invalidate()
                 self.refillingTimer = nil
+                // Flash "Ready" for 2 seconds
+                self.showingReady = true
+                self.updateMenuBarButton(windowTotal: 0, limit: 1, sessionTotal: 0, isCalibrated: true)
+                self.readyTimer?.invalidate()
+                self.readyTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: false) { [weak self] _ in
+                    self?.showingReady = false
+                    self?.refresh()
+                }
             } else {
                 self.refillingFraction = 1 - pow(1 - progress, 3)   // ease-out cubic
+                self.updateMenuBarButton(windowTotal: 0, limit: 1, sessionTotal: 0, isCalibrated: true)
             }
-            self.updateMenuBarButton(windowTotal: 0, limit: 1,
-                                     sessionTotal: 0, isCalibrated: true)
         }
     }
 
     // MARK: Menu bar button
 
     func updateMenuBarButton(windowTotal: Int, limit: Int?, sessionTotal: Int, isCalibrated: Bool) {
-        // 1. Refill animation
-        if let frac = refillingFraction {
-            statusItem.button?.image    = makeBarImage(fraction: frac)
-            statusItem.button?.title    = ""
+        // 0. "Ready" flash after refill completes
+        if showingReady {
+            statusItem.button?.image = makeTextBarImage(text: "Ready", bold: true)
+            statusItem.button?.title = ""
             return
         }
 
-        // 2. Countdown when rate limited
+        // 1. Refill animation (bar filling left→right)
+        if let frac = refillingFraction {
+            statusItem.button?.image = makeBarImage(fraction: frac)
+            statusItem.button?.title = ""
+            return
+        }
+
+        // 2. Rate limited: countdown text inside bar outline
         if let resetAt = rateLimitResetAt {
             let rem = max(0, resetAt.timeIntervalSinceNow)
             let h = Int(rem) / 3600
@@ -420,16 +487,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             else if m >= 2 { display = "\(m)m" }
             else if m == 1 { display = "1m \(s)s" }
             else           { display = "\(s)s" }
-
-            let img = NSImage(systemSymbolName: "hourglass", accessibilityDescription: nil)
-            img?.isTemplate = true
-            statusItem.button?.image         = img
-            statusItem.button?.imagePosition = .imageLeft
-            statusItem.button?.title         = "\u{2009}\(display)"
+            statusItem.button?.image = makeTextBarImage(text: display)
+            statusItem.button?.title = ""
             return
         }
 
-        // 3. Calibrated: bar EMPTIES as tokens are used
+        // 3. Calibrated: bar drains as tokens are used
         if isCalibrated, let limit = limit, limit > 0 {
             let frac = 1.0 - Double(windowTotal) / Double(limit)
             statusItem.button?.image = makeBarImage(fraction: max(0, frac))
@@ -437,28 +500,30 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
-        // 4. Calibrating: icon + raw count
+        // 4. Calibrating: token icon + raw count
         statusItem.button?.image         = makeTokenIcon()
         statusItem.button?.imagePosition = .imageLeft
         statusItem.button?.title         = "\u{2009}\(fmt(sessionTotal))"
     }
 
-    // MARK: Menu
+    // MARK: Menu builders
 
     func makeInfoItem(field: NSTextField, lines: Int = 1) -> NSMenuItem {
-        field.font               = NSFont.menuFont(ofSize: 0)
-        field.textColor          = .labelColor
-        field.isEditable         = false
-        field.isSelectable       = false
-        field.isBezeled          = false
-        field.drawsBackground    = false
+        field.font                 = NSFont.menuFont(ofSize: 0)
+        field.textColor            = .labelColor
+        field.isEditable           = false
+        field.isSelectable         = false
+        field.isBezeled            = false
+        field.drawsBackground      = false
         field.maximumNumberOfLines = lines
-        field.lineBreakMode      = lines > 1 ? .byWordWrapping : .byTruncatingTail
+        field.lineBreakMode        = lines > 1 ? .byWordWrapping : .byTruncatingTail
 
         let lpad: CGFloat = 14, rpad: CGFloat = 14, vpad: CGFloat = 2
         let lineH: CGFloat = 18, w: CGFloat = 260
-        field.frame = NSRect(x: lpad, y: vpad, width: w - lpad - rpad, height: lineH * CGFloat(lines))
-        let view = NSView(frame: NSRect(x: 0, y: 0, width: w, height: lineH * CGFloat(lines) + 2 * vpad))
+        field.frame = NSRect(x: lpad, y: vpad,
+                             width: w - lpad - rpad, height: lineH * CGFloat(lines))
+        let view = NSView(frame: NSRect(x: 0, y: 0, width: w,
+                                        height: lineH * CGFloat(lines) + 2 * vpad))
         view.addSubview(field)
 
         let item = NSMenuItem()
@@ -467,20 +532,35 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         return item
     }
 
-    func makeBoldHeader(_ text: String) -> NSMenuItem {
-        let field = NSTextField(labelWithString: text)
-        field.font = NSFont.boldSystemFont(ofSize: NSFont.systemFontSize)
-        field.textColor = .labelColor
-        field.isEditable = false; field.isSelectable = false
-        field.isBezeled  = false; field.drawsBackground = false
-        field.sizeToFit()
+    /// "Current session" (bold, left) | percentage (secondary, right) on one line.
+    func makeSessionHeaderItem() -> NSMenuItem {
+        let w: CGFloat = 260, lpad: CGFloat = 14, rpad: CGFloat = 14, vpad: CGFloat = 4
 
-        let lpad: CGFloat = 14, vpad: CGFloat = 4, w: CGFloat = 260
-        field.frame = NSRect(x: lpad, y: vpad, width: w - lpad - 14, height: field.frame.height)
-        let view = NSView(frame: NSRect(x: 0, y: 0, width: w,
-                                        height: field.frame.height + 2 * vpad))
-        view.addSubview(field)
-        let item = NSMenuItem(); item.isEnabled = false; item.view = view
+        let leftField = NSTextField(labelWithString: "Current session")
+        leftField.font        = NSFont.boldSystemFont(ofSize: NSFont.systemFontSize)
+        leftField.textColor   = .labelColor
+        leftField.isEditable  = false; leftField.isSelectable  = false
+        leftField.isBezeled   = false; leftField.drawsBackground = false
+        leftField.sizeToFit()
+        let h = leftField.frame.height
+
+        sessionPctField.font          = NSFont.systemFont(ofSize: NSFont.systemFontSize)
+        sessionPctField.textColor     = .secondaryLabelColor
+        sessionPctField.alignment     = .right
+        sessionPctField.isEditable    = false; sessionPctField.isSelectable   = false
+        sessionPctField.isBezeled     = false; sessionPctField.drawsBackground = false
+
+        let pctW: CGFloat = 50
+        leftField.frame       = NSRect(x: lpad,            y: vpad, width: w - lpad - pctW - rpad, height: h)
+        sessionPctField.frame = NSRect(x: w - pctW - rpad, y: vpad, width: pctW,                   height: h)
+
+        let view = NSView(frame: NSRect(x: 0, y: 0, width: w, height: h + 2 * vpad))
+        view.addSubview(leftField)
+        view.addSubview(sessionPctField)
+
+        let item = NSMenuItem()
+        item.isEnabled = false
+        item.view = view
         return item
     }
 
@@ -488,21 +568,28 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let m = NSMenu()
         m.autoenablesItems = false
 
-        // Current session header + usage row — shown only when calibrated
-        currentSessionHeader = makeBoldHeader("Current session")
-        m.addItem(currentSessionHeader)
-        usageItem = makeInfoItem(field: usageField)
-        usageField.textColor = .secondaryLabelColor
-        m.addItem(usageItem)
+        // ── Calibrating hint ───────────────────────────────────────────────
+        hintItem = makeInfoItem(field: hintField, lines: 2)
+        hintField.textColor   = .secondaryLabelColor
+        hintField.stringValue = "Calibrates after 1st time you run out of tokens"
+        m.addItem(hintItem)
 
-        histSepItem = .separator()
-        m.addItem(histSepItem)
-        histHeaderItem = makeBoldHeader("History")
-        m.addItem(histHeaderItem)
-        let histMenuItem = makeInfoItem(field: histField, lines: 1)
-        histView = histMenuItem.view
-        histBodyItem = histMenuItem
-        m.addItem(histBodyItem)
+        // ── Calibrated: current session row ───────────────────────────────
+        sessionHeaderItem = makeSessionHeaderItem()
+        m.addItem(sessionHeaderItem)
+
+        // ── Calibrated: absolute usage row ────────────────────────────────
+        usageAbsItem = makeInfoItem(field: usageAbsField)
+        usageAbsField.textColor = .secondaryLabelColor
+        m.addItem(usageAbsItem)
+
+        // ── Separator + Options submenu ────────────────────────────────────
+        mainSepItem = .separator()
+        m.addItem(mainSepItem)
+
+        optionsItem         = NSMenuItem(title: "Options", action: nil, keyEquivalent: "")
+        optionsItem.submenu = historySubmenu
+        m.addItem(optionsItem)
 
         m.addItem(.separator())
         m.addItem(NSMenuItem(title: "Quit",
@@ -514,7 +601,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: Refresh
 
     func refresh() {
-        // Check if countdown just expired
+        // Check if countdown just expired naturally
         if let resetAt = rateLimitResetAt, resetAt <= Date() {
             rateLimitResetAt = nil
             startRefillAnimation()
@@ -535,7 +622,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
             let isCalibrated = status.limitEventCount >= 1 && status.estimatedLimit != nil
 
-            // ── Menu bar button ──────────────────────────────────────────
+            // ── Menu bar ─────────────────────────────────────────────────
             self.updateMenuBarButton(
                 windowTotal:  status.window.total,
                 limit:        status.estimatedLimit,
@@ -543,33 +630,38 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 isCalibrated: isCalibrated
             )
 
-            // ── Usage / History block — shown when calibrated ────────────
-            self.currentSessionHeader.isHidden = !isCalibrated
-            self.usageItem.isHidden            = !isCalibrated
-            self.histSepItem.isHidden          = !isCalibrated
-            self.histHeaderItem.isHidden       = !isCalibrated
-            self.histBodyItem.isHidden         = !isCalibrated
+            // ── Show / hide dropdown sections ─────────────────────────────
+            self.hintItem.isHidden          = isCalibrated
+            self.sessionHeaderItem.isHidden = !isCalibrated
+            self.usageAbsItem.isHidden      = !isCalibrated
+            self.mainSepItem.isHidden       = !isCalibrated
+            self.optionsItem.isHidden       = !isCalibrated
 
+            // ── Update values ─────────────────────────────────────────────
             if isCalibrated, let limit = status.estimatedLimit, limit > 0 {
-                self.usageField.stringValue = "\(fmt(status.window.total)) / \(fmt(limit))"
+                let remaining = max(0.0, 1.0 - Double(status.window.total) / Double(limit))
+                self.sessionPctField.stringValue = "\(Int(remaining * 100))%"
+                self.usageAbsField.stringValue   = "\(fmt(status.window.total)) / \(fmt(limit))"
             }
 
+            // ── Update Options > history submenu ─────────────────────────
+            self.historySubmenu.removeAllItems()
             let evList = limits.events.suffix(4)
             if evList.isEmpty {
-                self.histField.stringValue = "No events yet"
+                let none = NSMenuItem(title: "No history yet", action: nil, keyEquivalent: "")
+                none.isEnabled = false
+                self.historySubmenu.addItem(none)
             } else {
                 let hFmt = DateFormatter()
                 hFmt.dateFormat = "MMM d, HH:mm"
-                self.histField.stringValue = evList.map { e in
-                    let d = parseDate(e.timestamp) ?? Date()
-                    return "\(hFmt.string(from: d))  →  \(fmt(e.tokensAtLimit))"
-                }.joined(separator: "\n")
+                for e in evList.reversed() {
+                    let d     = parseDate(e.timestamp) ?? Date()
+                    let entry = NSMenuItem(title: "\(hFmt.string(from: d)) — \(fmt(e.tokensAtLimit))",
+                                          action: nil, keyEquivalent: "")
+                    entry.isEnabled = false
+                    self.historySubmenu.addItem(entry)
+                }
             }
-
-            let lineCount = max(1, evList.isEmpty ? 1 : evList.count)
-            let lineH: CGFloat = 18, vpad: CGFloat = 2
-            self.histField.frame.size.height = lineH * CGFloat(lineCount)
-            self.histView?.frame.size.height  = lineH * CGFloat(lineCount) + 2 * vpad
         }
     }
 
@@ -583,9 +675,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             LimitsData.self, from: (try? Data(contentsOf: limitsFile)) ?? Data()
         )) ?? LimitsData(events: [])
 
-        let iso      = ISO8601DateFormatter()
-        var event    = LimitEvent(timestamp: iso.string(from: Date()),
-                                  tokensAtLimit: status.window.total)
+        let iso   = ISO8601DateFormatter()
+        var event = LimitEvent(timestamp: iso.string(from: Date()),
+                               tokensAtLimit: status.window.total)
         event.resetTimestamp = iso.string(from: resetTime)
         limits.events.append(event)
         try? JSONEncoder().encode(limits).write(to: limitsFile)
