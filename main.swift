@@ -238,16 +238,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     // Dropdown info fields
     var histField            = NSTextField(labelWithString: "")
     var histView: NSView?
-    var hintField            = NSTextField(labelWithString: "")   // shown only when calibrating
-    var hintItem             = NSMenuItem()
     var usageField           = NSTextField(labelWithString: "")   // shown when calibrated
     var usageItem            = NSMenuItem()
     var currentSessionHeader = NSMenuItem()
-    var undoItem             = NSMenuItem()
     var histSepItem          = NSMenuItem()
     var histHeaderItem       = NSMenuItem()
     var histBodyItem         = NSMenuItem()
-    var histTrailSepItem     = NSMenuItem()
 
     // FSEvents
     var fsEventStream:       FSEventStreamRef?
@@ -508,25 +504,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         histBodyItem = histMenuItem
         m.addItem(histBodyItem)
 
-        histTrailSepItem = .separator()
-        m.addItem(histTrailSepItem)
-
-        m.addItem(makeBoldHeader("Actions"))
-
-        // Hint — shown only when calibrating
-        hintItem = makeInfoItem(field: hintField, lines: 3)
-        hintField.textColor = .secondaryLabelColor
-        hintField.stringValue = "Tracker calibrates after you register your tokens running out for the first time"
-        m.addItem(hintItem)
-
-        let ran = NSMenuItem(title: "My tokens ran out",
-                             action: #selector(recordLimit), keyEquivalent: "")
-        ran.target = self
-        m.addItem(ran)
-
-        undoItem.title = "Undo"; undoItem.action = #selector(removeLastLimit)
-        undoItem.target = self
-        m.addItem(undoItem)
         m.addItem(.separator())
         m.addItem(NSMenuItem(title: "Quit",
                              action: #selector(NSApplication.terminate(_:)),
@@ -572,9 +549,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             self.histSepItem.isHidden          = !isCalibrated
             self.histHeaderItem.isHidden       = !isCalibrated
             self.histBodyItem.isHidden         = !isCalibrated
-            self.histTrailSepItem.isHidden     = !isCalibrated
-            self.hintItem.isHidden             = isCalibrated
-            self.undoItem.isHidden             = !isCalibrated
 
             if isCalibrated, let limit = status.estimatedLimit, limit > 0 {
                 self.usageField.stringValue = "\(fmt(status.window.total)) / \(fmt(limit))"
@@ -599,12 +573,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    // MARK: Record limit
-
-    @objc func recordLimit() {
-        // Manual trigger — estimate reset as 5h from now
-        doRecordLimit(resetTime: Date().addingTimeInterval(5 * 3600))
-    }
+    // MARK: Record limit (auto-detection only)
 
     func doRecordLimit(resetTime: Date) {
         guard let data   = try? Data(contentsOf: statusFile),
@@ -628,42 +597,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         task.arguments     = [hookScript.path]
         task.standardInput = FileHandle.nullDevice
         try? task.run()
-
-        refresh()
-    }
-
-    @objc func removeLastLimit() {
-        var limits = (try? JSONDecoder().decode(
-            LimitsData.self, from: (try? Data(contentsOf: limitsFile)) ?? Data()
-        )) ?? LimitsData(events: [])
-
-        guard !limits.events.isEmpty else { return }
-        limits.events.removeLast()
-        try? JSONEncoder().encode(limits).write(to: limitsFile)
-
-        if let data = try? Data(contentsOf: statusFile),
-           var obj  = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-            let vals = limits.events.map { $0.tokensAtLimit }.sorted()
-            let mid  = vals.count / 2
-            let est: Any = vals.isEmpty ? NSNull() :
-                           (vals.count % 2 != 0 ? vals[mid] : (vals[mid-1] + vals[mid]) / 2)
-            obj["limit_event_count"] = limits.events.count
-            obj["estimated_limit"]   = est
-            obj["window_start"]      = limits.events.last?.timestamp ?? NSNull()
-            if let updated = try? JSONSerialization.data(withJSONObject: obj) {
-                try? updated.write(to: statusFile)
-            }
-        }
-
-        // Restore countdown from the new last event (if still valid)
-        if let last      = limits.events.last,
-           let resetStr  = last.resetTimestamp,
-           let resetDate = parseDate(resetStr),
-           resetDate > Date() {
-            rateLimitResetAt = resetDate
-        } else {
-            rateLimitResetAt = nil
-        }
 
         refresh()
     }
