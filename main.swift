@@ -292,10 +292,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var usageAbsField = NSTextField(labelWithString: "")
     var usageAbsItem  = NSMenuItem()
 
-    // Separators and Options submenu
+    // Separators and History submenu
     var mainSepItem    = NSMenuItem()
     var optionsItem    = NSMenuItem()
-    var historySubmenu = NSMenu(title: "Options")
+    var historySubmenu = NSMenu(title: "History")
 
     // FSEvents
     var fsEventStream:       FSEventStreamRef?
@@ -583,11 +583,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         usageAbsField.textColor = .secondaryLabelColor
         m.addItem(usageAbsItem)
 
-        // ── Separator + Options submenu ────────────────────────────────────
+        // ── Separator + History submenu ────────────────────────────────────
         mainSepItem = .separator()
         m.addItem(mainSepItem)
 
-        optionsItem         = NSMenuItem(title: "Options", action: nil, keyEquivalent: "")
+        optionsItem         = NSMenuItem(title: "History", action: nil, keyEquivalent: "")
         optionsItem.submenu = historySubmenu
         m.addItem(optionsItem)
 
@@ -644,7 +644,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 self.usageAbsField.stringValue   = "\(fmt(status.window.total)) / \(fmt(limit))"
             }
 
-            // ── Update Options > history submenu ─────────────────────────
+            // ── Update History submenu ────────────────────────────────────
             self.historySubmenu.removeAllItems()
             let evList = limits.events.suffix(4)
             if evList.isEmpty {
