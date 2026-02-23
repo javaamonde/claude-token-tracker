@@ -113,13 +113,11 @@ def main():
         window["cache_write"] + int(window["cache_read"] * 0.1)
     )
 
-    # Estimated limit: median of recorded limit values
-    observed = [e["tokens_at_limit"] for e in events if "tokens_at_limit" in e]
-    estimated_limit = None
-    if observed:
-        s = sorted(observed)
-        mid = len(s) // 2
-        estimated_limit = s[mid] if len(s) % 2 != 0 else (s[mid - 1] + s[mid]) // 2
+    # Estimated limit: max of recorded values.
+    # The true limit is >= any observed tokens_at_limit, so max is the best lower bound.
+    # Excludes zero values (can result from measurement artifacts).
+    observed = [e["tokens_at_limit"] for e in events if e.get("tokens_at_limit", 0) > 0]
+    estimated_limit = max(observed) if observed else None
 
     status = {
         "updated_ts": datetime.now().isoformat(),
